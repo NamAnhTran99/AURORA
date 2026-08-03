@@ -7,7 +7,8 @@ Defaults:
 - Model: `gpt-oss:20b`
 - Local Ollama API: `http://127.0.0.1:11434`
 - Tailscale endpoint: configured at runtime through the `AURORA_ENDPOINT` environment variable
-- Serve mapping: `tailscale serve --https=443 http://127.0.0.1:11434` (foreground, non-persistent)
+- Local proxy: `http://127.0.0.1:11435` forwards to Ollama at `http://127.0.0.1:11434`
+- Serve mapping: `tailscale serve --https=443 http://127.0.0.1:11435` (foreground, non-persistent)
 
 ## Configuration
 
@@ -44,12 +45,13 @@ Or use the Windows launcher:
 
 ## Notes
 
-- `start` launches `ollama serve` when the API is not already reachable, pulls `gpt-oss:20b` if missing, loads it into VRAM, verifies the loaded state through `/api/ps`, and configures Tailscale Serve.
+- `start` launches `ollama serve` when the API is not already reachable, pulls `gpt-oss:20b` if missing, loads it into VRAM, starts the local Host-header-fixing proxy, verifies the loaded state through `/api/ps`, and configures Tailscale Serve through that proxy.
 - `run` is an alias for `start`, so it also warms the model before returning.
 - Model warm-up can take several minutes when loading from disk into VRAM. Use `-NoPull` to prevent downloading a missing model.
 - `status` reads Ollama's `/api/ps` endpoint and shows actual loaded state, processor split, context size, and expiry.
 - `test` sends a generation request locally and through the configured Tailscale URL. Use `-SkipRemote` to test only the local API. If `AURORA_ENDPOINT` is unset, the remote test is skipped.
 - `stop` disables the HTTPS Serve mapping, unloads the model, verifies the unloaded state through `/api/ps`, and then stops local `ollama` processes.
+- Ollama remains bound to the loopback address; the proxy is also loopback-only and is the only local target published through Tailscale Serve.
 - Tailscale Serve is intentionally non-persistent. It does not resume after a reboot; run `start` again when the PC comes back online.
 - AURORA does not create a Windows startup task. Tailscale itself may still run as a Windows service, independently of Serve.
 

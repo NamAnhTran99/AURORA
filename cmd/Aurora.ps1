@@ -8,6 +8,7 @@ param(
     [string]$Model = "gpt-oss:20b",
     [string]$LocalBaseUrl = "http://127.0.0.1:11434",
     [string]$Endpoint = "",
+    [int]$ProxyPort = 11435,
     [int]$ServePort = 443,
     [switch]$SkipRemote,
     [switch]$NoPull,
@@ -125,6 +126,118 @@ function Wait-Ollama {
     } while ((Get-Date) -lt $deadline)
 
     throw "Ollama did not become reachable at $BaseUrl within $TimeoutSec seconds."
+}
+
+function Get-ProxyUrl {
+    param([int]$Port)
+    return "http://127.0.0.1:$Port"
+}
+
+function Get-ProxyPidPath {
+    param([int]$Port)
+    return Join-Path $env:TEMP "aurora-proxy-$Port.pid"
+}
+
+function Get-TailscalePidPath {
+    param([int]$Port)
+    return Join-Path $env:TEMP "aurora-tailscale-serve-$Port.pid"
+}
+
+function Get-TailscaleServeProcesses {
+    param([int]$Port)
+
+    $processInfo = Get-CimInstance Win32_Process -Filter "Name = 'tailscale.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "\bserve\b" -and $_.CommandLine -like "*--https=$Port*" }
+
+    foreach ($info in $processInfo) {
+        Get-Process -Id $info.ProcessId -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-LocalProxyProcess {
+    param([int]$ProcessId)
+
+    if ($ProcessId -le 0) {
+        return $null
+    }
+
+    $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    if (-not $processInfo -or $processInfo.CommandLine -notmatch "AuroraProxy\.ps1") {
+        return $null
+    }
+
+    return Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+}
+
+function Start-LocalProxy {
+    param(
+        [string]$OllamaUrl,
+        [int]$Port
+    )
+
+    $proxyUrl = Get-ProxyUrl -Port $Port
+    $proxyScript = Join-Path $PSScriptRoot "AuroraProxy.ps1"
+    $pidPath = Get-ProxyPidPath -Port $Port
+
+    if (-not (Test-Path -LiteralPath $proxyScript -PathType Leaf)) {
+        throw "Local proxy script was not found at $proxyScript."
+    }
+
+    if (Test-Path -LiteralPath $pidPath -PathType Leaf) {
+        $existingPid = 0
+        [int]::TryParse((Get-Content -LiteralPath $pidPath -Raw).Trim(), [ref]$existingPid) | Out-Null
+        $existingProcess = Get-LocalProxyProcess -ProcessId $existingPid
+        if ($existingProcess -and (Test-OllamaApi -BaseUrl $proxyUrl).Online) {
+            Write-Ok "Local Ollama proxy is already running at $proxyUrl."
+            return
+        }
+        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Info "Starting local Ollama proxy at $proxyUrl."
+    $proxyProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $proxyScript,
+        "-ProxyPort", $Port,
+        "-OllamaUrl", $OllamaUrl
+    ) -WindowStyle Hidden -PassThru
+    Set-Content -LiteralPath $pidPath -Value $proxyProcess.Id -Encoding ASCII
+
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+        if ((Test-OllamaApi -BaseUrl $proxyUrl).Online) {
+            Write-Ok "Local Ollama proxy is running at $proxyUrl."
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    Stop-Process -Id $proxyProcess.Id -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    throw "Local Ollama proxy did not become reachable at $proxyUrl."
+}
+
+function Stop-LocalProxy {
+    param([int]$Port)
+
+    $pidPath = Get-ProxyPidPath -Port $Port
+    if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) {
+        Write-Ok "No AURORA local proxy process is registered."
+        return
+    }
+
+    $proxyPid = 0
+    [int]::TryParse((Get-Content -LiteralPath $pidPath -Raw).Trim(), [ref]$proxyPid) | Out-Null
+    $proxyProcess = Get-LocalProxyProcess -ProcessId $proxyPid
+    if ($proxyProcess) {
+        Stop-Process -Id $proxyPid -Force
+        Write-Ok "Local Ollama proxy stopped."
+    }
+    else {
+        Write-Warn "Registered local Ollama proxy process was not found."
+    }
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
 }
 
 function Format-Bytes {
@@ -328,8 +441,16 @@ function Start-TailscaleServe {
     )
 
     Assert-Command "tailscale" | Out-Null
+    $pidPath = Get-TailscalePidPath -Port $Port
+    $existing = @(Get-TailscaleServeProcesses -Port $Port)
+    if ($existing.Count -gt 0) {
+        Write-Warn "Tailscale Serve is already running for HTTPS port $Port."
+        return
+    }
+
     Write-Info "Publishing $BaseUrl through non-persistent Tailscale Serve on HTTPS port $Port."
-    Start-Process -FilePath "tailscale" -ArgumentList @("serve", "--yes", "--https=$Port", $BaseUrl) -WindowStyle Hidden | Out-Null
+    $serveProcess = Start-Process -FilePath "tailscale" -ArgumentList @("serve", "--yes", "--https=$Port", $BaseUrl) -WindowStyle Hidden -PassThru
+    Set-Content -LiteralPath $pidPath -Value $serveProcess.Id -Encoding ASCII
     Start-Sleep -Milliseconds 750
     Write-Ok "Tailscale Serve is configured."
 }
@@ -368,7 +489,8 @@ function Invoke-AuroraStart {
 
     Ensure-OllamaRunning -BaseUrl $BaseUrl
     Ensure-Model -ModelName $ModelName -SkipPull:$SkipPull
-    Start-TailscaleServe -BaseUrl $BaseUrl -Port $ServePort
+    Start-LocalProxy -OllamaUrl $BaseUrl -Port $ProxyPort
+    Start-TailscaleServe -BaseUrl (Get-ProxyUrl -Port $ProxyPort) -Port $ServePort
     Warm-Model -BaseUrl $BaseUrl -ModelName $ModelName
     Show-Status -BaseUrl $BaseUrl -RemoteUrl $RemoteUrl -ModelName $ModelName
 }
@@ -376,9 +498,24 @@ function Invoke-AuroraStart {
 function Stop-TailscaleServe {
     param([int]$Port)
 
+    $pidPath = Get-TailscalePidPath -Port $Port
+    $serveProcesses = @(Get-TailscaleServeProcesses -Port $Port)
+    if ($serveProcesses.Count -gt 0) {
+        Write-Info "Stopping AURORA Tailscale Serve processes."
+        $serveProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 750
+    }
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+
     $tailscale = Get-CommandPath "tailscale"
     if (-not $tailscale) {
         Write-Warn "tailscale was not found; skipping Serve shutdown."
+        return
+    }
+
+    $serveState = Get-TailscaleServeStatus
+    if ($serveState.Available -and -not $serveState.Configured) {
+        Write-Ok "No Tailscale Serve handler is configured."
         return
     }
 
@@ -389,6 +526,12 @@ function Stop-TailscaleServe {
     }
     else {
         Write-Warn "tailscale serve off exited with code $LASTEXITCODE."
+    }
+
+    $remaining = @(Get-TailscaleServeProcesses -Port $Port)
+    if ($remaining.Count -gt 0) {
+        $names = ($remaining | ForEach-Object { "$($_.ProcessName) [$($_.Id)]" }) -join ", "
+        throw "Tailscale Serve processes are still running: $names"
     }
 }
 
@@ -422,20 +565,30 @@ function Stop-Ollama {
         }
     }
 
-    $processes = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
-    if (-not $processes) {
-        Write-Ok "No Ollama process is running."
-        return
+    $processes = @(Get-Process -Name "ollama*" -ErrorAction SilentlyContinue)
+    if ($processes.Count -gt 0) {
+        Write-Info "Stopping all Ollama processes."
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            $processes | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 750
+            $processes = @(Get-Process -Name "ollama*" -ErrorAction SilentlyContinue)
+            if ($processes.Count -eq 0) {
+                break
+            }
+            Write-Warn "Ollama processes are still present; retrying shutdown."
+        }
     }
 
-    Write-Info "Stopping Ollama processes."
-    $processes | Stop-Process -Force
-    Start-Sleep -Milliseconds 750
+    if ($processes.Count -gt 0) {
+        $names = ($processes | ForEach-Object { "$($_.ProcessName) [$($_.Id)]" }) -join ", "
+        throw "Ollama processes are still running after shutdown attempts: $names"
+    }
+
     $afterStop = Test-OllamaApi -BaseUrl $BaseUrl
     if ($afterStop.Online) {
         throw "Ollama process stop was requested, but the API is still reachable at $BaseUrl."
     }
-    Write-Ok "Ollama API is offline after process stop."
+    Write-Ok "All Ollama processes stopped; API is offline."
 }
 
 function Get-TailscaleServeStatus {
@@ -492,18 +645,23 @@ function Show-Status {
     $ollamaExe = Get-CommandPath "ollama"
     if ($ollamaExe) {
         Write-Ok "ollama CLI: $ollamaExe"
-        try {
-            $models = & ollama list 2>$null
-            $modelLine = $models | Where-Object { $_ -match "^\s*$([regex]::Escape($ModelName))\s" } | Select-Object -First 1
-            if ($modelLine) {
-                Write-Ok "Model installed: $ModelName"
+        if ($ollama.Online) {
+            try {
+                $models = & ollama list 2>$null
+                $modelLine = $models | Where-Object { $_ -match "^\s*$([regex]::Escape($ModelName))\s" } | Select-Object -First 1
+                if ($modelLine) {
+                    Write-Ok "Model installed: $ModelName"
+                }
+                else {
+                    Write-Warn "Model is not listed locally: $ModelName"
+                }
             }
-            else {
-                Write-Warn "Model is not listed locally: $ModelName"
+            catch {
+                Write-Warn "Could not list Ollama models: $($_.Exception.Message)"
             }
         }
-        catch {
-            Write-Warn "Could not list Ollama models: $($_.Exception.Message)"
+        else {
+            Write-Warn "Skipping model list because the Ollama API is offline."
         }
     }
     else {
@@ -601,7 +759,8 @@ function Show-Context {
     param(
         [string]$BaseUrl,
         [string]$RemoteUrl,
-        [string]$ModelName
+        [string]$ModelName,
+        [int]$ProxyPort
     )
 
     Write-Host "AURORA context"
@@ -610,7 +769,8 @@ function Show-Context {
     Write-Host "Local API:    $BaseUrl"
     $displayRemoteUrl = if ([string]::IsNullOrWhiteSpace($RemoteUrl)) { "(not configured; set AURORA_ENDPOINT)" } else { $RemoteUrl }
     Write-Host "Tailnet URL:  $displayRemoteUrl"
-    Write-Host "Serve target: $BaseUrl via HTTPS port $ServePort"
+    $proxyUrl = Get-ProxyUrl -Port $ProxyPort
+    Write-Host "Serve target: $proxyUrl via HTTPS port $ServePort"
     Write-Host ""
     Write-Host "Useful endpoints:"
     Write-Host "  GET  $($BaseUrl.TrimEnd('/'))/api/version"
@@ -666,10 +826,11 @@ Defaults:
   Model:       $Model
   Local API:   $LocalBaseUrl
   Endpoint:    $(if ([string]::IsNullOrWhiteSpace($Endpoint)) { "(not configured; set AURORA_ENDPOINT)" } else { $Endpoint })
+  Proxy port:  $ProxyPort
   Serve port:  $ServePort
 
 Start configures:
-  tailscale serve --https=$ServePort $LocalBaseUrl
+  tailscale serve --https=$ServePort http://127.0.0.1:$ProxyPort
 "@
 }
 
@@ -683,6 +844,7 @@ try {
         }
         "stop" {
             Stop-TailscaleServe -Port $ServePort
+            Stop-LocalProxy -Port $ProxyPort
             Stop-Ollama -BaseUrl $LocalBaseUrl -ModelName $Model
         }
         "status" {
@@ -692,7 +854,7 @@ try {
             Invoke-AuroraTest -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -SkipRemoteTest:$SkipRemote -UserPrompt $Prompt
         }
         "context" {
-            Show-Context -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model
+            Show-Context -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -ProxyPort $ProxyPort
         }
         default {
             Show-Help
