@@ -7,7 +7,7 @@ param(
 
     [string]$Model = "gpt-oss:20b",
     [string]$LocalBaseUrl = "http://127.0.0.1:11434",
-    [string]$Endpoint = $env:AURORA_ENDPOINT,
+    [string]$Endpoint = "",
     [int]$ServePort = 443,
     [switch]$SkipRemote,
     [switch]$NoPull,
@@ -15,6 +15,34 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Import-AuroraDotEnv {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return
+    }
+
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') {
+            $name = $Matches[1]
+            if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+                continue
+            }
+
+            $value = $Matches[2]
+            if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+        }
+    }
+}
+
+Import-AuroraDotEnv -Path (Join-Path $PSScriptRoot "..\.env")
+if ([string]::IsNullOrWhiteSpace($Endpoint)) {
+    $Endpoint = $env:AURORA_ENDPOINT
+}
 
 function Write-Info {
     param([string]$Message)
