@@ -1,0 +1,4 @@
+# Keep local Ollama model artifacts and machine-specific configuration out of Git.
+models/
+.env
+*.local
