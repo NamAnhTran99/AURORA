@@ -464,9 +464,10 @@ function Warm-Model {
     Write-Info "Loading model $ModelName into VRAM. This can take a while."
     try {
         Invoke-JsonPost -Uri "$($BaseUrl.TrimEnd('/'))/api/generate" -Body @{
-            model  = $ModelName
-            prompt = "Reply with exactly OK."
-            stream = $false
+            model       = $ModelName
+            prompt      = "Reply with exactly OK."
+            stream      = $false
+            keep_alive  = -1
         } -TimeoutSec 900 | Out-Null
     }
     catch {

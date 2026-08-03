@@ -17,9 +17,10 @@ AURORA automatically loads a root-level `.env` file. Keep this file local; it is
 ```env
 AURORA_ENDPOINT=https://your-tailnet-hostname.ts.net/
 OLLAMA_MODELS=E:\Ollama\Models
+OLLAMA_KEEP_ALIVE=-1
 ```
 
-`OLLAMA_MODELS` controls where Ollama stores model files. The `.env` values take precedence over existing process environment variables when AURORA starts.
+`OLLAMA_MODELS` controls where Ollama stores model files. `OLLAMA_KEEP_ALIVE=-1` keeps the loaded model resident until AURORA stops Ollama. The `.env` values take precedence over existing process environment variables when AURORA starts.
 
 ## Commands
 
