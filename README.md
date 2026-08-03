@@ -7,7 +7,7 @@ Defaults:
 - Model: `gpt-oss:20b`
 - Local Ollama API: `http://127.0.0.1:11434`
 - Tailscale endpoint: configured at runtime through the `AURORA_ENDPOINT` environment variable
-- Serve mapping: `tailscale serve --bg --yes --https=443 http://127.0.0.1:11434`
+- Serve mapping: `tailscale serve --https=443 http://127.0.0.1:11434` (foreground, non-persistent)
 
 ## Commands
 
@@ -33,7 +33,7 @@ aurora context
 
 ## Notes
 
-- `start` launches `ollama serve` when the API is not already reachable, pulls `gpt-oss:20b` if missing, and configures Tailscale Serve.
+- `start` launches `ollama serve` when the API is not already reachable, pulls `gpt-oss:20b` if missing, loads it into VRAM, verifies the loaded state through `/api/ps`, and configures Tailscale Serve.
 - `run` is an alias for `start`.
 - `status` reads Ollama's `/api/ps` endpoint and shows actual loaded state, processor split, context size, and expiry.
 - `test` sends a generation request locally and through the configured Tailscale URL. Use `-SkipRemote` to test only the local API.

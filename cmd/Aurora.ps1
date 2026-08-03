@@ -26,10 +26,6 @@ function Import-AuroraDotEnv {
     foreach ($line in Get-Content -LiteralPath $Path) {
         if ($line -match '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') {
             $name = $Matches[1]
-            if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-                continue
-            }
-
             $value = $Matches[2]
             if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
                 $value = $value.Substring(1, $value.Length - 2)
@@ -332,12 +328,34 @@ function Start-TailscaleServe {
     )
 
     Assert-Command "tailscale" | Out-Null
-    Write-Info "Publishing $BaseUrl through Tailscale Serve on HTTPS port $Port."
-    & tailscale serve --bg --yes "--https=$Port" $BaseUrl
-    if ($LASTEXITCODE -ne 0) {
-        throw "tailscale serve failed with exit code $LASTEXITCODE."
-    }
+    Write-Info "Publishing $BaseUrl through non-persistent Tailscale Serve on HTTPS port $Port."
+    Start-Process -FilePath "tailscale" -ArgumentList @("serve", "--yes", "--https=$Port", $BaseUrl) -WindowStyle Hidden | Out-Null
+    Start-Sleep -Milliseconds 750
     Write-Ok "Tailscale Serve is configured."
+}
+
+function Warm-Model {
+    param(
+        [string]$BaseUrl,
+        [string]$ModelName
+    )
+
+    Write-Info "Loading model $ModelName into VRAM. This can take a while."
+    try {
+        Invoke-JsonPost -Uri "$($BaseUrl.TrimEnd('/'))/api/generate" -Body @{
+            model  = $ModelName
+            prompt = "Reply with exactly OK."
+            stream = $false
+        } -TimeoutSec 900 | Out-Null
+    }
+    catch {
+        throw "Model warm-up failed: $($_.Exception.Message)"
+    }
+
+    $observed = Wait-ModelLoadedState -BaseUrl $BaseUrl -ModelName $ModelName -ShouldBeLoaded $true -TimeoutSec 30
+    Write-Host ""
+    Write-Info "Observed state after model warm-up:"
+    Write-LoadedModelState -PsState $observed -ModelName $ModelName | Out-Null
 }
 
 function Invoke-AuroraStart {
@@ -351,6 +369,7 @@ function Invoke-AuroraStart {
     Ensure-OllamaRunning -BaseUrl $BaseUrl
     Ensure-Model -ModelName $ModelName -SkipPull:$SkipPull
     Start-TailscaleServe -BaseUrl $BaseUrl -Port $ServePort
+    Warm-Model -BaseUrl $BaseUrl -ModelName $ModelName
     Show-Status -BaseUrl $BaseUrl -RemoteUrl $RemoteUrl -ModelName $ModelName
 }
 
@@ -430,15 +449,19 @@ function Get-TailscaleServeStatus {
 
     try {
         $raw = & tailscale serve status --json 2>&1
+        $rawText = ($raw -join [Environment]::NewLine)
+        $available = ($LASTEXITCODE -eq 0)
         return [pscustomobject]@{
-            Available = ($LASTEXITCODE -eq 0)
-            Raw       = ($raw -join [Environment]::NewLine)
+            Available  = $available
+            Configured = ($available -and $rawText.Trim() -ne "{}" -and -not [string]::IsNullOrWhiteSpace($rawText))
+            Raw        = $rawText
         }
     }
     catch {
         return [pscustomobject]@{
-            Available = $false
-            Raw       = $_.Exception.Message
+            Available  = $false
+            Configured = $false
+            Raw        = $_.Exception.Message
         }
     }
 }
@@ -492,7 +515,13 @@ function Show-Status {
             Write-Host ""
             Write-Info "Observed /api/ps state:"
             $running = Get-OllamaPs -BaseUrl $BaseUrl
-            Write-LoadedModelState -PsState $running -ModelName $ModelName | Out-Null
+            $modelLoaded = Write-LoadedModelState -PsState $running -ModelName $ModelName
+            if ($modelLoaded) {
+                Write-Ok "Model loaded: $ModelName"
+            }
+            else {
+                Write-Warn "Model loaded: no ($ModelName)"
+            }
         }
         catch {
             Write-Warn "Could not read loaded models from /api/ps: $($_.Exception.Message)"
@@ -509,6 +538,13 @@ function Show-Status {
     }
     if ($serve.Raw) {
         Write-Host $serve.Raw
+    }
+
+    if ($serve.Configured -and -not [string]::IsNullOrWhiteSpace($RemoteUrl)) {
+        Write-Ok "Tailscale URL: $RemoteUrl"
+    }
+    else {
+        Write-Warn "Tailscale URL is not active."
     }
 }
 
@@ -633,7 +669,7 @@ Defaults:
   Serve port:  $ServePort
 
 Start configures:
-  tailscale serve --bg --yes --https=$ServePort $LocalBaseUrl
+  tailscale serve --https=$ServePort $LocalBaseUrl
 "@
 }
 
