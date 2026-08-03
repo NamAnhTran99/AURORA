@@ -23,12 +23,12 @@ Defaults:
 Or use the Windows launcher:
 
 ```cmd
-cmd\aurora start
-cmd\aurora stop
-cmd\aurora status
-cmd\aurora run
-cmd\aurora test
-cmd\aurora context
+aurora start
+aurora stop
+aurora status
+aurora run
+aurora test
+aurora context
 ```
 
 ## Notes
