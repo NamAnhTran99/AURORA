@@ -18,16 +18,20 @@ AURORA automatically loads a root-level `.env` file. Keep this file local; it is
 ```env
 AURORA_ENDPOINT=https://your-tailnet-hostname.ts.net/
 AURORA_MODEL=qwen3:14b
-AURORA_CONTEXT_LENGTH=32768
+AURORA_CONTEXT_LENGTH=40960
 OLLAMA_MODELS=E:\Ollama\Models
 OLLAMA_KEEP_ALIVE=-1
+OLLAMA_FLASH_ATTENTION=1
+OLLAMA_KV_CACHE_TYPE=q8_0
 SEARXNG_URL=http://127.0.0.1:8080
 ```
 
 Set `AURORA_MODEL` to the Ollama model AURORA should pull and load. You can override it for one command with `-Model`.
-`AURORA_CONTEXT_LENGTH` controls the context requested during model warm-up. The default is `32768`; you can override it with `-ContextLength`.
+`AURORA_CONTEXT_LENGTH` controls the context requested during model warm-up. The default is `40960`; you can override it with `-ContextLength`.
 
 `OLLAMA_MODELS` controls where Ollama stores model files. `OLLAMA_KEEP_ALIVE=-1` keeps the loaded model resident until AURORA stops Ollama. The `.env` values take precedence over existing process environment variables when AURORA starts.
+
+`OLLAMA_FLASH_ATTENTION=1` enables Flash Attention, and `OLLAMA_KV_CACHE_TYPE=q8_0` reduces KV-cache memory usage so larger contexts are practical. These settings apply when AURORA starts Ollama; restart AURORA after changing them.
 
 ## Commands
 

@@ -32,7 +32,7 @@ if ([string]::IsNullOrWhiteSpace($Model)) {
     $Model = if ([string]::IsNullOrWhiteSpace($env:AURORA_MODEL)) { "qwen3:14b" } else { $env:AURORA_MODEL }
 }
 if ($ContextLength -le 0) {
-    $ContextLength = if ([string]::IsNullOrWhiteSpace($env:AURORA_CONTEXT_LENGTH)) { 32768 } else { [int]$env:AURORA_CONTEXT_LENGTH }
+    $ContextLength = if ([string]::IsNullOrWhiteSpace($env:AURORA_CONTEXT_LENGTH)) { 40960 } else { [int]$env:AURORA_CONTEXT_LENGTH }
 }
 if ($ContextLength -le 0) {
     throw "Context length must be greater than zero."
@@ -42,6 +42,12 @@ if ([string]::IsNullOrWhiteSpace($Endpoint)) {
 }
 if (-not [string]::IsNullOrWhiteSpace($env:SEARXNG_URL)) {
     $SearxngUrl = $env:SEARXNG_URL
+}
+if ([string]::IsNullOrWhiteSpace($env:OLLAMA_FLASH_ATTENTION)) {
+    $env:OLLAMA_FLASH_ATTENTION = "1"
+}
+if ([string]::IsNullOrWhiteSpace($env:OLLAMA_KV_CACHE_TYPE)) {
+    $env:OLLAMA_KV_CACHE_TYPE = "q8_0"
 }
 $SearxngDir = Join-Path $AuroraRoot "..\services\searxng"
 
