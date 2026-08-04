@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.Net.Http
+. (Join-Path $PSScriptRoot "modules\Aurora.Tools.ps1")
 
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://127.0.0.1:$ProxyPort/")
@@ -62,44 +63,7 @@ function Write-ProxyError {
     $Response.Close()
 }
 
-$searchTool = [ordered]@{
-    type = "function"
-    function = [ordered]@{
-        name = "web_search"
-        description = "Search the web when current, uncertain, or external information is needed. Return concise source-backed results."
-        parameters = [ordered]@{
-            type = "object"
-            required = @("query")
-            properties = [ordered]@{
-                query = [ordered]@{ type = "string"; description = "The web search query" }
-                max_results = [ordered]@{ type = "integer"; description = "Maximum results, from 1 to 10" }
-            }
-        }
-    }
-}
-
-function Invoke-WebSearch {
-    param(
-        [string]$Query,
-        [int]$MaxResults = 5
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Query)) {
-        return (@{ error = "web_search requires a non-empty query" } | ConvertTo-Json -Compress)
-    }
-
-    try {
-        $encoded = [Uri]::EscapeDataString($Query)
-        $response = Invoke-RestMethod -Uri "$($SearxngUrl.TrimEnd('/'))/search?q=$encoded&format=json" -TimeoutSec 30 -Verbose:$false
-        $results = @($response.results) | Select-Object -First $MaxResults | ForEach-Object {
-            [ordered]@{ title = $_.title; url = $_.url; snippet = $_.content }
-        }
-        return (@{ query = $Query; results = @($results) } | ConvertTo-Json -Depth 10 -Compress)
-    }
-    catch {
-        return (@{ query = $Query; error = $_.Exception.Message; results = @() } | ConvertTo-Json -Compress)
-    }
-}
+$searchTool = Get-AuroraToolDefinition -Name "web_search"
 
 function Invoke-ChatWithWebSearch {
     param([object]$Payload)
@@ -143,9 +107,7 @@ function Invoke-ChatWithWebSearch {
             $arguments = $call.function.arguments
             if ($arguments -is [string]) { $arguments = $arguments | ConvertFrom-Json }
             $query = [string]$arguments.query
-            $maxResults = 5
-            if ($arguments.max_results) { $maxResults = [Math]::Min(10, [Math]::Max(1, [int]$arguments.max_results)) }
-            $result = Invoke-WebSearch -Query $query -MaxResults $maxResults
+            $result = Invoke-AuroraTool -Name "web_search" -Arguments $arguments -Context @{ SearxngUrl = $SearxngUrl }
             Write-Trace "WEB_SEARCH query=$query"
             if ($VerboseLevel -ge 2) { Write-Trace "WEB_SEARCH_RESULT $result" }
             [void]$messages.Add([pscustomobject]@{ role = "tool"; tool_name = "web_search"; content = $result })
@@ -218,9 +180,7 @@ function Invoke-StreamingChatWithWebSearch {
             $arguments = $call.function.arguments
             if ($arguments -is [string]) { $arguments = $arguments | ConvertFrom-Json }
             $query = [string]$arguments.query
-            $maxResults = 5
-            if ($arguments.max_results) { $maxResults = [Math]::Min(10, [Math]::Max(1, [int]$arguments.max_results)) }
-            $result = Invoke-WebSearch -Query $query -MaxResults $maxResults
+            $result = Invoke-AuroraTool -Name "web_search" -Arguments $arguments -Context @{ SearxngUrl = $SearxngUrl }
             Write-Trace "WEB_SEARCH query=$query"
             if ($VerboseLevel -ge 2) { Write-Trace "WEB_SEARCH_RESULT $result" }
             [void]$messages.Add([pscustomobject]@{ role = "tool"; tool_name = "web_search"; content = $result })
