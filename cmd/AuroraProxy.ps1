@@ -2,9 +2,9 @@
 param(
     [int]$ProxyPort = 11435,
     [string]$OllamaUrl = "http://127.0.0.1:11434",
-    [switch]$Trace,
-    [switch]$ConsoleTrace,
-    [switch]$FullTrace
+    [ValidateRange(0, 2)]
+    [int]$VerboseLevel = 0,
+    [switch]$ConsoleTrace
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +27,7 @@ function Get-TracePreview {
     }
 
     $text = [Text.Encoding]::UTF8.GetString($Bytes) -replace "\s+", " "
-    if (-not $FullTrace -and $text.Length -gt 2000) {
+    if ($text.Length -gt 2000) {
         return $text.Substring(0, 2000) + "... [truncated]"
     }
     return $text
@@ -36,7 +36,7 @@ function Get-TracePreview {
 function Write-Trace {
     param([string]$Message)
 
-    if (-not $Trace) {
+    if ($VerboseLevel -lt 1) {
         return
     }
 
@@ -87,7 +87,9 @@ try {
                 $body = New-Object System.IO.MemoryStream
                 $request.InputStream.CopyTo($body)
                 $body.Position = 0
-                Write-Trace "REQUEST_BODY $(Get-TracePreview -Bytes $body.ToArray())"
+                if ($VerboseLevel -ge 2) {
+                    Write-Trace "REQUEST_BODY $(Get-TracePreview -Bytes $body.ToArray())"
+                }
                 $requestMessage.Content = New-Object System.Net.Http.StreamContent($body)
                 foreach ($headerName in $request.Headers.AllKeys) {
                     if ($headerName -in @("Content-Type", "Content-Encoding", "Content-Language", "Content-Location", "Content-MD5", "Content-Range")) {
@@ -122,7 +124,7 @@ try {
                 $response.SendChunked = $true
             }
 
-            if ($Trace) {
+            if ($VerboseLevel -ge 2) {
                 $responseBytes = $responseMessage.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
                 Write-Trace "RESPONSE_BODY $(Get-TracePreview -Bytes $responseBytes)"
                 $response.OutputStream.Write($responseBytes, 0, $responseBytes.Length)

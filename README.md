@@ -17,13 +17,13 @@ AURORA automatically loads a root-level `.env` file. Keep this file local; it is
 ```env
 AURORA_ENDPOINT=https://your-tailnet-hostname.ts.net/
 AURORA_MODEL=qwen3:14b
-AURORA_CONTEXT_LENGTH=16384
+AURORA_CONTEXT_LENGTH=32768
 OLLAMA_MODELS=E:\Ollama\Models
 OLLAMA_KEEP_ALIVE=-1
 ```
 
 Set `AURORA_MODEL` to the Ollama model AURORA should pull and load. You can override it for one command with `-Model`.
-`AURORA_CONTEXT_LENGTH` controls the context requested during model warm-up. You can override it with `-ContextLength`.
+`AURORA_CONTEXT_LENGTH` controls the context requested during model warm-up. The default is `32768`; you can override it with `-ContextLength`.
 
 `OLLAMA_MODELS` controls where Ollama stores model files. `OLLAMA_KEEP_ALIVE=-1` keeps the loaded model resident until AURORA stops Ollama. The `.env` values take precedence over existing process environment variables when AURORA starts.
 
@@ -49,30 +49,24 @@ Or use the Windows launcher:
 .\aurora.cmd context
 ```
 
-Add `-Verbose` when debugging startup or local Ollama traffic. AURORA keeps live request and response traces in the same PowerShell window:
+Use `-Verbose` with a level from 0 to 2 when debugging startup or local Ollama traffic:
 
 ```powershell
-.\aurora.cmd start -Verbose
+.\aurora.cmd start -Verbose 1
 ```
 
-Verbose start stays in the foreground and keeps streaming until `Ctrl+C`; stopping it also shuts down AURORA services.
+Level 0 is silent, level 1 shows compact request and response metadata, and level 2 shows full request and response payload previews. Any level above 0 stays in the foreground until `Ctrl+C`; stopping it also shuts down AURORA services.
 
-Use `-Trace` for untruncated request and response payloads:
-
-```powershell
-.\aurora.cmd start -Trace
-```
-
-Verbose tracing is opt-in and does not include SearXNG orchestration; that will be added on the web-search branch.
+Verbose output is opt-in and does not include SearXNG orchestration; that will be added on the web-search branch.
 
 To switch models, use the same model name for the lifecycle command:
 
 ```powershell
-.\aurora.cmd stop -Model gpt-oss:20b
-.\aurora.cmd start -Model qwen2.5-coder:14b
+.\aurora.cmd stop -Model qwen3:14b
+.\aurora.cmd start -Model qwen3:14b
 ```
 
-To make the new model the default, set `AURORA_MODEL=qwen2.5-coder:14b` in `.env`.
+To make another model the default, set `AURORA_MODEL=model:tag` in `.env`.
 
 ## Notes
 
