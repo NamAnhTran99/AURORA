@@ -5,17 +5,22 @@ param(
     [ValidateSet("start", "stop", "status", "run", "test", "context", "help")]
     [string]$Command = "help",
 
-    [string]$Model = "gpt-oss:20b",
+    [string]$Model = "",
+    [int]$ContextLength = 0,
     [string]$LocalBaseUrl = "http://127.0.0.1:11434",
     [string]$Endpoint = "",
     [int]$ProxyPort = 11435,
     [int]$ServePort = 443,
     [switch]$SkipRemote,
     [switch]$NoPull,
+    [switch]$Trace,
     [string]$Prompt
 )
 
 $ErrorActionPreference = "Stop"
+if ($Trace) {
+    $VerbosePreference = "Continue"
+}
 
 function Import-AuroraDotEnv {
     param([string]$Path)
@@ -37,6 +42,15 @@ function Import-AuroraDotEnv {
 }
 
 Import-AuroraDotEnv -Path (Join-Path $PSScriptRoot "..\.env")
+if ([string]::IsNullOrWhiteSpace($Model)) {
+    $Model = if ([string]::IsNullOrWhiteSpace($env:AURORA_MODEL)) { "qwen3:14b" } else { $env:AURORA_MODEL }
+}
+if ($ContextLength -le 0) {
+    $ContextLength = if ([string]::IsNullOrWhiteSpace($env:AURORA_CONTEXT_LENGTH)) { 16384 } else { [int]$env:AURORA_CONTEXT_LENGTH }
+}
+if ($ContextLength -le 0) {
+    throw "Context length must be greater than zero."
+}
 if ([string]::IsNullOrWhiteSpace($Endpoint)) {
     $Endpoint = $env:AURORA_ENDPOINT
 }
@@ -195,19 +209,37 @@ function Start-LocalProxy {
     }
 
     Write-Info "Starting local Ollama proxy at $proxyUrl."
-    $proxyProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+    $proxyArguments = @(
         "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
+        "-ExecutionPolicy", "Bypass"
+    )
+    $proxyArguments += @(
         "-File", $proxyScript,
         "-ProxyPort", $Port,
         "-OllamaUrl", $OllamaUrl
-    ) -WindowStyle Hidden -PassThru
+    )
+    $traceEnabled = $VerbosePreference -eq "Continue"
+    if ($traceEnabled) {
+        $proxyArguments += @("-Trace", "-ConsoleTrace")
+    }
+    if ($Trace) {
+        $proxyArguments += "-FullTrace"
+    }
+    if ($traceEnabled) {
+        $proxyProcess = Start-Process -FilePath "powershell.exe" -ArgumentList $proxyArguments -NoNewWindow -PassThru
+    }
+    else {
+        $proxyProcess = Start-Process -FilePath "powershell.exe" -ArgumentList $proxyArguments -WindowStyle Hidden -PassThru
+    }
     Set-Content -LiteralPath $pidPath -Value $proxyProcess.Id -Encoding ASCII
 
     $deadline = (Get-Date).AddSeconds(15)
     do {
         if ((Test-OllamaApi -BaseUrl $proxyUrl).Online) {
             Write-Ok "Local Ollama proxy is running at $proxyUrl."
+            if ($VerbosePreference -eq "Continue") {
+                Write-Info "Live proxy trace is attached to this PowerShell window."
+            }
             return
         }
         Start-Sleep -Milliseconds 500
@@ -458,7 +490,8 @@ function Start-TailscaleServe {
 function Warm-Model {
     param(
         [string]$BaseUrl,
-        [string]$ModelName
+        [string]$ModelName,
+        [int]$ContextLength
     )
 
     Write-Info "Loading model $ModelName into VRAM. This can take a while."
@@ -468,6 +501,7 @@ function Warm-Model {
             prompt      = "Reply with exactly OK."
             stream      = $false
             keep_alive  = -1
+            options     = @{ num_ctx = $ContextLength }
         } -TimeoutSec 900 | Out-Null
     }
     catch {
@@ -485,6 +519,7 @@ function Invoke-AuroraStart {
         [string]$BaseUrl,
         [string]$RemoteUrl,
         [string]$ModelName,
+        [int]$ContextLength,
         [switch]$SkipPull
     )
 
@@ -492,8 +527,38 @@ function Invoke-AuroraStart {
     Ensure-Model -ModelName $ModelName -SkipPull:$SkipPull
     Start-LocalProxy -OllamaUrl $BaseUrl -Port $ProxyPort
     Start-TailscaleServe -BaseUrl (Get-ProxyUrl -Port $ProxyPort) -Port $ServePort
-    Warm-Model -BaseUrl $BaseUrl -ModelName $ModelName
+    Warm-Model -BaseUrl $BaseUrl -ModelName $ModelName -ContextLength $ContextLength
     Show-Status -BaseUrl $BaseUrl -RemoteUrl $RemoteUrl -ModelName $ModelName
+    if ($VerbosePreference -eq "Continue") {
+        Wait-VerboseSession -BaseUrl $BaseUrl -ModelName $ModelName -Port $ProxyPort -ServePort $ServePort
+    }
+}
+
+function Wait-VerboseSession {
+    param(
+        [string]$BaseUrl,
+        [string]$ModelName,
+        [int]$Port,
+        [int]$ServePort
+    )
+
+    Write-Info "Verbose session is active in this PowerShell. Press Ctrl+C to stop AURORA."
+    try {
+        while ($true) {
+            $pidPath = Get-ProxyPidPath -Port $Port
+            $proxyPid = 0
+            if (-not (Test-Path -LiteralPath $pidPath) -or -not [int]::TryParse((Get-Content -LiteralPath $pidPath -Raw).Trim(), [ref]$proxyPid) -or -not (Get-LocalProxyProcess -ProcessId $proxyPid)) {
+                throw "The local proxy stopped unexpectedly."
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    finally {
+        Write-Info "Stopping AURORA verbose session."
+        try { Stop-TailscaleServe -Port $ServePort } catch { Write-Warn $_.Exception.Message }
+        try { Stop-LocalProxy -Port $Port } catch { Write-Warn $_.Exception.Message }
+        try { Stop-Ollama -BaseUrl $BaseUrl -ModelName $ModelName } catch { Write-Warn $_.Exception.Message }
+    }
 }
 
 function Stop-TailscaleServe {
@@ -536,6 +601,12 @@ function Stop-TailscaleServe {
     }
 }
 
+function Get-OllamaProcesses {
+    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ProcessName -like "ollama*" -or $_.ProcessName -eq "llama-server"
+    })
+}
+
 function Stop-Ollama {
     param(
         [string]$BaseUrl,
@@ -566,13 +637,13 @@ function Stop-Ollama {
         }
     }
 
-    $processes = @(Get-Process -Name "ollama*" -ErrorAction SilentlyContinue)
+    $processes = @(Get-OllamaProcesses)
     if ($processes.Count -gt 0) {
         Write-Info "Stopping all Ollama processes."
         for ($attempt = 1; $attempt -le 3; $attempt++) {
             $processes | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Milliseconds 750
-            $processes = @(Get-Process -Name "ollama*" -ErrorAction SilentlyContinue)
+            $processes = @(Get-OllamaProcesses)
             if ($processes.Count -eq 0) {
                 break
             }
@@ -816,15 +887,16 @@ function Show-Help {
 AURORA - Windows PowerShell CLI for local Ollama + Tailscale Serve
 
 Usage:
-  .\Aurora.ps1 start    [-NoPull]
-  .\Aurora.ps1 run      [-NoPull]                         # alias for start
-  .\Aurora.ps1 stop
-  .\Aurora.ps1 status
-  .\Aurora.ps1 test     [-SkipRemote] [-Prompt "Say hello"]
-  .\Aurora.ps1 context
+  .\Aurora.ps1 start    [-Model "model:tag"] [-ContextLength 32768] [-NoPull]
+  .\Aurora.ps1 run      [-Model "model:tag"] [-ContextLength 32768] [-NoPull] # alias for start
+  .\Aurora.ps1 stop     [-Model "model:tag"]
+  .\Aurora.ps1 status   [-Model "model:tag"]
+  .\Aurora.ps1 test     [-Model "model:tag"] [-SkipRemote] [-Prompt "Say hello"]
+  .\Aurora.ps1 context  [-Model "model:tag"]
 
 Defaults:
   Model:       $Model
+  Context:     $ContextLength
   Local API:   $LocalBaseUrl
   Endpoint:    $(if ([string]::IsNullOrWhiteSpace($Endpoint)) { "(not configured; set AURORA_ENDPOINT)" } else { $Endpoint })
   Proxy port:  $ProxyPort
@@ -838,10 +910,10 @@ Start configures:
 try {
     switch ($Command) {
         "start" {
-            Invoke-AuroraStart -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -SkipPull:$NoPull
+            Invoke-AuroraStart -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -ContextLength $ContextLength -SkipPull:$NoPull
         }
         "run" {
-            Invoke-AuroraStart -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -SkipPull:$NoPull
+            Invoke-AuroraStart -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -ContextLength $ContextLength -SkipPull:$NoPull
         }
         "stop" {
             Stop-TailscaleServe -Port $ServePort

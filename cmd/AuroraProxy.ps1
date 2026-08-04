@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [int]$ProxyPort = 11435,
-    [string]$OllamaUrl = "http://127.0.0.1:11434"
+    [string]$OllamaUrl = "http://127.0.0.1:11434",
+    [switch]$Trace,
+    [switch]$ConsoleTrace,
+    [switch]$FullTrace
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +18,33 @@ $listener.Start()
 $client = New-Object System.Net.Http.HttpClient
 $client.Timeout = [TimeSpan]::FromMinutes(15)
 $hopByHopHeaders = @("Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade")
+
+function Get-TracePreview {
+    param([byte[]]$Bytes)
+
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) {
+        return "(empty)"
+    }
+
+    $text = [Text.Encoding]::UTF8.GetString($Bytes) -replace "\s+", " "
+    if (-not $FullTrace -and $text.Length -gt 2000) {
+        return $text.Substring(0, 2000) + "... [truncated]"
+    }
+    return $text
+}
+
+function Write-Trace {
+    param([string]$Message)
+
+    if (-not $Trace) {
+        return
+    }
+
+    $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"), $Message
+    if ($ConsoleTrace) {
+        Write-Host $line
+    }
+}
 
 function Write-ProxyError {
     param(
@@ -42,6 +72,7 @@ try {
         try {
             $query = if ($request.Url.Query) { $request.Url.Query } else { "" }
             $targetUri = "$($OllamaUrl.TrimEnd('/'))$($request.Url.AbsolutePath)$query"
+            Write-Trace "REQUEST $($request.HttpMethod) $($request.Url.AbsolutePath)$query"
             $requestMessage = New-Object System.Net.Http.HttpRequestMessage ([System.Net.Http.HttpMethod]::new($request.HttpMethod), $targetUri)
             $requestMessage.Headers.Host = "localhost:11434"
 
@@ -56,6 +87,7 @@ try {
                 $body = New-Object System.IO.MemoryStream
                 $request.InputStream.CopyTo($body)
                 $body.Position = 0
+                Write-Trace "REQUEST_BODY $(Get-TracePreview -Bytes $body.ToArray())"
                 $requestMessage.Content = New-Object System.Net.Http.StreamContent($body)
                 foreach ($headerName in $request.Headers.AllKeys) {
                     if ($headerName -in @("Content-Type", "Content-Encoding", "Content-Language", "Content-Location", "Content-MD5", "Content-Range")) {
@@ -65,6 +97,7 @@ try {
             }
 
             $responseMessage = $client.SendAsync($requestMessage, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            Write-Trace "RESPONSE $([int]$responseMessage.StatusCode) $($responseMessage.ReasonPhrase) content_type=$($responseMessage.Content.Headers.ContentType)"
             $response.StatusCode = [int]$responseMessage.StatusCode
             $response.StatusDescription = $responseMessage.ReasonPhrase
 
@@ -89,9 +122,16 @@ try {
                 $response.SendChunked = $true
             }
 
-            $responseStream = $responseMessage.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-            $responseStream.CopyTo($response.OutputStream)
-            $responseStream.Dispose()
+            if ($Trace) {
+                $responseBytes = $responseMessage.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+                Write-Trace "RESPONSE_BODY $(Get-TracePreview -Bytes $responseBytes)"
+                $response.OutputStream.Write($responseBytes, 0, $responseBytes.Length)
+            }
+            else {
+                $responseStream = $responseMessage.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+                $responseStream.CopyTo($response.OutputStream)
+                $responseStream.Dispose()
+            }
             $response.Close()
         }
         catch {

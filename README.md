@@ -4,7 +4,7 @@ AURORA is a Windows PowerShell CLI for controlling a local Ollama server and pub
 
 Defaults:
 
-- Model: `gpt-oss:20b`
+- Model: `AURORA_MODEL` from `.env`, or `qwen3:14b` when unset
 - Local Ollama API: `http://127.0.0.1:11434`
 - Tailscale endpoint: configured at runtime through the `AURORA_ENDPOINT` environment variable
 - Local proxy: `http://127.0.0.1:11435` forwards to Ollama at `http://127.0.0.1:11434`
@@ -16,9 +16,14 @@ AURORA automatically loads a root-level `.env` file. Keep this file local; it is
 
 ```env
 AURORA_ENDPOINT=https://your-tailnet-hostname.ts.net/
+AURORA_MODEL=qwen3:14b
+AURORA_CONTEXT_LENGTH=16384
 OLLAMA_MODELS=E:\Ollama\Models
 OLLAMA_KEEP_ALIVE=-1
 ```
+
+Set `AURORA_MODEL` to the Ollama model AURORA should pull and load. You can override it for one command with `-Model`.
+`AURORA_CONTEXT_LENGTH` controls the context requested during model warm-up. You can override it with `-ContextLength`.
 
 `OLLAMA_MODELS` controls where Ollama stores model files. `OLLAMA_KEEP_ALIVE=-1` keeps the loaded model resident until AURORA stops Ollama. The `.env` values take precedence over existing process environment variables when AURORA starts.
 
@@ -44,9 +49,34 @@ Or use the Windows launcher:
 .\aurora.cmd context
 ```
 
+Add `-Verbose` when debugging startup or local Ollama traffic. AURORA keeps live request and response traces in the same PowerShell window:
+
+```powershell
+.\aurora.cmd start -Verbose
+```
+
+Verbose start stays in the foreground and keeps streaming until `Ctrl+C`; stopping it also shuts down AURORA services.
+
+Use `-Trace` for untruncated request and response payloads:
+
+```powershell
+.\aurora.cmd start -Trace
+```
+
+Verbose tracing is opt-in and does not include SearXNG orchestration; that will be added on the web-search branch.
+
+To switch models, use the same model name for the lifecycle command:
+
+```powershell
+.\aurora.cmd stop -Model gpt-oss:20b
+.\aurora.cmd start -Model qwen2.5-coder:14b
+```
+
+To make the new model the default, set `AURORA_MODEL=qwen2.5-coder:14b` in `.env`.
+
 ## Notes
 
-- `start` launches `ollama serve` when the API is not already reachable, pulls `gpt-oss:20b` if missing, loads it into VRAM, starts the local Host-header-fixing proxy, verifies the loaded state through `/api/ps`, and configures Tailscale Serve through that proxy.
+- `start` launches `ollama serve` when the API is not already reachable, pulls the selected model if missing, loads it into VRAM, starts the local Host-header-fixing proxy, verifies the loaded state through `/api/ps`, and configures Tailscale Serve through that proxy.
 - `run` is an alias for `start`, so it also warms the model before returning.
 - Model warm-up can take several minutes when loading from disk into VRAM. Use `-NoPull` to prevent downloading a missing model.
 - `status` reads Ollama's `/api/ps` endpoint and shows actual loaded state, processor split, context size, and expiry.
