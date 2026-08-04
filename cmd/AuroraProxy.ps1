@@ -155,6 +155,81 @@ function Invoke-ChatWithWebSearch {
     throw "Web-search tool loop exceeded its four-round limit."
 }
 
+function Invoke-StreamingChatWithWebSearch {
+    param([object]$Payload)
+
+    $messages = New-Object System.Collections.ArrayList
+    foreach ($message in @($Payload.messages | Where-Object { $null -ne $_ })) { [void]$messages.Add($message) }
+
+    $tools = New-Object System.Collections.ArrayList
+    foreach ($tool in @($Payload.tools | Where-Object { $null -ne $_ })) {
+        if ($tool.function.name -ne "web_search") { [void]$tools.Add($tool) }
+    }
+    [void]$tools.Add($searchTool)
+
+    for ($round = 1; $round -le 4; $round++) {
+        $request = [ordered]@{}
+        foreach ($property in $Payload.PSObject.Properties) {
+            if ($property.Name -notin @("messages", "tools")) { $request[$property.Name] = $property.Value }
+        }
+        $request.model = $Payload.model
+        $request.messages = @($messages)
+        $request.tools = @($tools)
+        $request.stream = $true
+        $request.keep_alive = -1
+        $json = $request | ConvertTo-Json -Depth 30 -Compress
+
+        Write-Trace "WEB_STREAM round=$round messages=$($messages.Count)"
+        if ($VerboseLevel -ge 2) { Write-Trace "WEB_STREAM_REQUEST_BODY $json" }
+        $response = Invoke-WebRequest -Uri "$($OllamaUrl.TrimEnd('/'))/api/chat" -Method Post -Body $json -ContentType "application/json" -TimeoutSec 900 -UseBasicParsing
+        $streamBody = if ($response.Content -is [byte[]]) {
+            [Text.Encoding]::UTF8.GetString($response.Content)
+        }
+        else {
+            [string]$response.Content
+        }
+        $rawLines = @($streamBody -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $decodedLines = @($rawLines | ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch { $null }
+        } | Where-Object { $null -ne $_ })
+        $toolCalls = @($decodedLines | ForEach-Object { @($_.message.tool_calls | Where-Object { $null -ne $_ }) })
+        $webCalls = @($toolCalls | Where-Object { $_.function.name -eq "web_search" })
+
+        Write-Trace "WEB_STREAM_RESPONSE status=$($response.StatusCode) tool_calls=$($toolCalls.Count)"
+        if ($VerboseLevel -ge 2) { Write-Trace "WEB_STREAM_RESPONSE_BODY $streamBody" }
+
+        if ($webCalls.Count -eq 0) {
+            return (($rawLines -join [Environment]::NewLine) + [Environment]::NewLine)
+        }
+
+        if ($toolCalls.Count -ne $webCalls.Count) {
+            return (($rawLines -join [Environment]::NewLine) + [Environment]::NewLine)
+        }
+
+        $assistantMessage = $null
+        foreach ($decoded in $decodedLines) {
+            if ($decoded.message -and $decoded.message.tool_calls) {
+                $assistantMessage = $decoded.message
+            }
+        }
+        if ($assistantMessage) { [void]$messages.Add($assistantMessage) }
+
+        foreach ($call in $webCalls) {
+            $arguments = $call.function.arguments
+            if ($arguments -is [string]) { $arguments = $arguments | ConvertFrom-Json }
+            $query = [string]$arguments.query
+            $maxResults = 5
+            if ($arguments.max_results) { $maxResults = [Math]::Min(10, [Math]::Max(1, [int]$arguments.max_results)) }
+            $result = Invoke-WebSearch -Query $query -MaxResults $maxResults
+            Write-Trace "WEB_SEARCH query=$query"
+            if ($VerboseLevel -ge 2) { Write-Trace "WEB_SEARCH_RESULT $result" }
+            [void]$messages.Add([pscustomobject]@{ role = "tool"; tool_name = "web_search"; content = $result })
+        }
+    }
+
+    throw "Web-search tool loop exceeded its four-round limit."
+}
+
 function Write-RawJsonResponse {
     param(
         [System.Net.HttpListenerResponse]$Response,
@@ -164,6 +239,21 @@ function Write-RawJsonResponse {
     $bytes = [Text.Encoding]::UTF8.GetBytes($Body)
     $Response.StatusCode = 200
     $Response.ContentType = "application/json"
+    $Response.ContentLength64 = $bytes.Length
+    $Response.OutputStream.Write($bytes, 0, $bytes.Length)
+    $Response.Close()
+}
+
+function Write-RawResponse {
+    param(
+        [System.Net.HttpListenerResponse]$Response,
+        [string]$Body,
+        [string]$ContentType
+    )
+
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Body)
+    $Response.StatusCode = 200
+    $Response.ContentType = $ContentType
     $Response.ContentLength64 = $bytes.Length
     $Response.OutputStream.Write($bytes, 0, $bytes.Length)
     $Response.Close()
@@ -203,7 +293,12 @@ try {
 
                 if ($request.Url.AbsolutePath -eq "/api/chat") {
                     $chatPayload = $bodyText | ConvertFrom-Json
-                    if (-not [bool]$chatPayload.stream) {
+                    if ([bool]$chatPayload.stream) {
+                        $rawChatResponse = Invoke-StreamingChatWithWebSearch -Payload $chatPayload
+                        Write-RawResponse -Response $response -Body $rawChatResponse -ContentType "application/x-ndjson"
+                        continue
+                    }
+                    else {
                         $rawChatResponse = Invoke-ChatWithWebSearch -Payload $chatPayload
                         if ($VerboseLevel -ge 2) { Write-Trace "FINAL_RESPONSE_BODY $rawChatResponse" }
                         Write-RawJsonResponse -Response $response -Body $rawChatResponse

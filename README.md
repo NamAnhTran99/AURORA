@@ -77,7 +77,7 @@ To make another model the default, set `AURORA_MODEL=model:tag` in `.env`.
 - Model warm-up can take several minutes when loading from disk into VRAM. Use `-NoPull` to prevent downloading a missing model.
 - `status` reads Ollama's `/api/ps` endpoint and shows actual loaded state, processor split, context size, and expiry.
 - `test` sends a generation request locally and through the configured Tailscale URL. Use `-SkipRemote` to test only the local API. If `AURORA_ENDPOINT` is unset, the remote test is skipped.
-- Non-streaming `/api/chat` requests advertise `web_search` to Ollama. AURORA handles that tool through local SearXNG and returns the final Ollama JSON response. Streaming chat and all other traffic remain transparent.
+- `/api/chat` requests advertise `web_search` to Ollama. AURORA handles that tool through local SearXNG and returns the final Ollama response in the format Continue requested. Streamed requests are buffered per model round so AURORA can detect and resolve web-search calls; native non-web tool calls and all other traffic remain transparent.
 - `stop` disables the HTTPS Serve mapping, unloads the model, verifies the unloaded state through `/api/ps`, and then stops local `ollama` processes.
 - Ollama and SearXNG remain bound to loopback; the proxy is also loopback-only and is the only local target published through Tailscale Serve.
 - Tailscale Serve is intentionally non-persistent. It does not resume after a reboot; run `start` again when the PC comes back online.
