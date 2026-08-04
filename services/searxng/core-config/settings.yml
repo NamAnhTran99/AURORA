@@ -1,0 +1,10 @@
+use_default_settings: true
+
+server:
+  secret_key: replace-with-a-long-random-value
+  bind_address: 0.0.0.0
+
+search:
+  formats:
+    - html
+    - json

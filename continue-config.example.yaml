@@ -1,0 +1,24 @@
+name: AURORA
+version: 1.0.0
+schema: v1
+
+models:
+  - name: AURORA
+    provider: ollama
+    model: qwen3:14b
+    apiBase: https://YOUR_AURORA_TAILNET_HOST/
+    roles:
+      - chat
+      - edit
+      - apply
+    capabilities:
+      - tool_use
+    defaultCompletionOptions:
+      contextLength: 32768
+      stream: true
+
+rules:
+  - |
+    Use Continue's native tools for file and terminal operations.
+    Never print tool calls as JSON or XML in your response.
+    When a tool is available, call it directly.
