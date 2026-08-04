@@ -14,7 +14,7 @@ models:
     capabilities:
       - tool_use
     defaultCompletionOptions:
-      contextLength: 32768
+      contextLength: 40960
       stream: true
 
 rules:
