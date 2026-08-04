@@ -1,6 +1,6 @@
 # AURORA
 
-AURORA is a Windows PowerShell CLI for controlling a local Ollama server and publishing it through Tailscale Serve.
+AURORA is a Windows PowerShell CLI for controlling local Ollama, SearXNG, and Tailscale Serve.
 
 Defaults:
 
@@ -8,6 +8,7 @@ Defaults:
 - Local Ollama API: `http://127.0.0.1:11434`
 - Tailscale endpoint: configured at runtime through the `AURORA_ENDPOINT` environment variable
 - Local proxy: `http://127.0.0.1:11435` forwards to Ollama at `http://127.0.0.1:11434`
+- Local SearXNG API: `http://127.0.0.1:8080`
 - Serve mapping: `tailscale serve --https=443 http://127.0.0.1:11435` (foreground, non-persistent)
 
 ## Configuration
@@ -20,6 +21,7 @@ AURORA_MODEL=qwen3:14b
 AURORA_CONTEXT_LENGTH=32768
 OLLAMA_MODELS=E:\Ollama\Models
 OLLAMA_KEEP_ALIVE=-1
+SEARXNG_URL=http://127.0.0.1:8080
 ```
 
 Set `AURORA_MODEL` to the Ollama model AURORA should pull and load. You can override it for one command with `-Model`.
@@ -57,7 +59,7 @@ Use `-Verbose` with a level from 0 to 2 when debugging startup or local Ollama t
 
 Level 0 is silent, level 1 shows compact request and response metadata, and level 2 shows full request and response payload previews. Any level above 0 stays in the foreground until `Ctrl+C`; stopping it also shuts down AURORA services.
 
-Verbose output is opt-in and does not include SearXNG orchestration; that will be added on the web-search branch.
+Verbose output is opt-in. Level 2 also shows the internal SearXNG tool request and result bodies.
 
 To switch models, use the same model name for the lifecycle command:
 
@@ -70,17 +72,18 @@ To make another model the default, set `AURORA_MODEL=model:tag` in `.env`.
 
 ## Notes
 
-- `start` launches `ollama serve` when the API is not already reachable, pulls the selected model if missing, loads it into VRAM, starts the local Host-header-fixing proxy, verifies the loaded state through `/api/ps`, and configures Tailscale Serve through that proxy.
+- `start` starts local SearXNG, launches `ollama serve` when the API is not already reachable, pulls the selected model if missing, loads it into VRAM, starts the local Host-header-fixing proxy, verifies the loaded state through `/api/ps`, and configures Tailscale Serve through that proxy.
 - `run` is an alias for `start`, so it also warms the model before returning.
 - Model warm-up can take several minutes when loading from disk into VRAM. Use `-NoPull` to prevent downloading a missing model.
 - `status` reads Ollama's `/api/ps` endpoint and shows actual loaded state, processor split, context size, and expiry.
 - `test` sends a generation request locally and through the configured Tailscale URL. Use `-SkipRemote` to test only the local API. If `AURORA_ENDPOINT` is unset, the remote test is skipped.
+- `/api/chat` requests advertise `web_search` to Ollama. AURORA handles that tool through local SearXNG and returns the final Ollama response in the format Continue requested. Streamed requests are buffered per model round so AURORA can detect and resolve web-search calls; native non-web tool calls and all other traffic remain transparent.
 - `stop` disables the HTTPS Serve mapping, unloads the model, verifies the unloaded state through `/api/ps`, and then stops local `ollama` processes.
-- Ollama remains bound to the loopback address; the proxy is also loopback-only and is the only local target published through Tailscale Serve.
+- Ollama and SearXNG remain bound to loopback; the proxy is also loopback-only and is the only local target published through Tailscale Serve.
 - Tailscale Serve is intentionally non-persistent. It does not resume after a reboot; run `start` again when the PC comes back online.
 - AURORA does not create a Windows startup task. Tailscale itself may still run as a Windows service, independently of Serve.
 
-You need both `ollama` and `tailscale` available on `PATH`.
+You need `ollama`, `tailscale`, and Docker Compose available on `PATH`.
 
 You can also configure the private endpoint for the current PowerShell session without editing `.env`:
 

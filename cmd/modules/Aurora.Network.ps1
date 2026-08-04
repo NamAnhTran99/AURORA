@@ -44,6 +44,7 @@ function Get-LocalProxyProcess {
 function Start-LocalProxy {
     param(
         [string]$OllamaUrl,
+        [string]$SearxngUrl = "http://127.0.0.1:8080",
         [int]$Port,
         [ValidateRange(0, 2)]
         [int]$VerboseLevel = 0
@@ -76,7 +77,8 @@ function Start-LocalProxy {
     $proxyArguments += @(
         "-File", $proxyScript,
         "-ProxyPort", $Port,
-        "-OllamaUrl", $OllamaUrl
+        "-OllamaUrl", $OllamaUrl,
+        "-SearxngUrl", $SearxngUrl
     )
     $traceEnabled = $VerboseLevel -gt 0
     if ($traceEnabled) {

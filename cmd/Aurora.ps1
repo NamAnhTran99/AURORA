@@ -7,6 +7,7 @@ param(
     [int]$ContextLength = 0,
     [string]$LocalBaseUrl = "http://127.0.0.1:11434",
     [string]$Endpoint = "",
+    [string]$SearxngUrl = "http://127.0.0.1:8080",
     [int]$ProxyPort = 11435,
     [int]$ServePort = 443,
     [switch]$SkipRemote,
@@ -24,6 +25,7 @@ $moduleRoot = Join-Path $PSScriptRoot "modules"
 . (Join-Path $moduleRoot "Aurora.Core.ps1")
 . (Join-Path $moduleRoot "Aurora.Network.ps1")
 . (Join-Path $moduleRoot "Aurora.Lifecycle.ps1")
+. (Join-Path $moduleRoot "Aurora.Search.ps1")
 
 Import-AuroraDotEnv -Path (Join-Path $AuroraRoot "..\.env")
 if ([string]::IsNullOrWhiteSpace($Model)) {
@@ -38,12 +40,17 @@ if ($ContextLength -le 0) {
 if ([string]::IsNullOrWhiteSpace($Endpoint)) {
     $Endpoint = $env:AURORA_ENDPOINT
 }
+if (-not [string]::IsNullOrWhiteSpace($env:SEARXNG_URL)) {
+    $SearxngUrl = $env:SEARXNG_URL
+}
+$SearxngDir = Join-Path $AuroraRoot "..\services\searxng"
 
 function Show-Status {
     param(
         [string]$BaseUrl,
         [string]$RemoteUrl,
-        [string]$ModelName
+        [string]$ModelName,
+        [string]$SearchUrl
     )
 
     Write-Host "AURORA status"
@@ -105,6 +112,9 @@ function Show-Status {
             Write-Warn "Could not read loaded models from /api/ps: $($_.Exception.Message)"
         }
     }
+
+    Write-Host ""
+    Show-SearxngStatus -BaseUrl $SearchUrl
 
     Write-Host ""
     $serve = Get-TailscaleServeStatus
@@ -251,6 +261,7 @@ Defaults:
   Model:       $Model
   Context:     $ContextLength
   Local API:   $LocalBaseUrl
+  SearXNG API: $SearxngUrl
   Endpoint:    $(if ([string]::IsNullOrWhiteSpace($Endpoint)) { "(not configured; set AURORA_ENDPOINT)" } else { $Endpoint })
   Proxy port:  $ProxyPort
   Serve port:  $ServePort
@@ -262,18 +273,19 @@ Start configures:
 try {
     switch ($Command) {
         "start" {
-            Invoke-AuroraStart -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -ContextLength $ContextLength -VerboseLevel $Verbose -SkipPull:$NoPull
+            Invoke-AuroraStart -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -SearxngUrl $SearxngUrl -ModelName $Model -ContextLength $ContextLength -VerboseLevel $Verbose -SkipPull:$NoPull
         }
         "run" {
-            Invoke-AuroraStart -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -ContextLength $ContextLength -VerboseLevel $Verbose -SkipPull:$NoPull
+            Invoke-AuroraStart -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -SearxngUrl $SearxngUrl -ModelName $Model -ContextLength $ContextLength -VerboseLevel $Verbose -SkipPull:$NoPull
         }
         "stop" {
             Stop-TailscaleServe -Port $ServePort
             Stop-LocalProxy -Port $ProxyPort
             Stop-Ollama -BaseUrl $LocalBaseUrl -ModelName $Model
+            Stop-Searxng -BaseUrl $SearxngUrl
         }
         "status" {
-            Show-Status -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model
+            Show-Status -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -SearchUrl $SearxngUrl
         }
         "test" {
             Invoke-AuroraTest -BaseUrl $LocalBaseUrl -RemoteUrl $Endpoint -ModelName $Model -SkipRemoteTest:$SkipRemote -UserPrompt $Prompt

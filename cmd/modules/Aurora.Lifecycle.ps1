@@ -31,6 +31,7 @@ function Invoke-AuroraStart {
     param(
         [string]$BaseUrl,
         [string]$RemoteUrl,
+        [string]$SearxngUrl,
         [string]$ModelName,
         [int]$ContextLength,
         [ValidateRange(0, 2)]
@@ -38,14 +39,15 @@ function Invoke-AuroraStart {
         [switch]$SkipPull
     )
 
+    Start-Searxng -BaseUrl $SearxngUrl
     Ensure-OllamaRunning -BaseUrl $BaseUrl
     Ensure-Model -ModelName $ModelName -SkipPull:$SkipPull
-    Start-LocalProxy -OllamaUrl $BaseUrl -Port $ProxyPort -VerboseLevel $VerboseLevel
+    Start-LocalProxy -OllamaUrl $BaseUrl -SearxngUrl $SearxngUrl -Port $ProxyPort -VerboseLevel $VerboseLevel
     Start-TailscaleServe -BaseUrl (Get-ProxyUrl -Port $ProxyPort) -Port $ServePort
     Warm-Model -BaseUrl $BaseUrl -ModelName $ModelName -ContextLength $ContextLength
-    Show-Status -BaseUrl $BaseUrl -RemoteUrl $RemoteUrl -ModelName $ModelName
+    Show-Status -BaseUrl $BaseUrl -RemoteUrl $RemoteUrl -ModelName $ModelName -SearchUrl $SearxngUrl
     if ($VerboseLevel -gt 0) {
-        Wait-VerboseSession -BaseUrl $BaseUrl -ModelName $ModelName -Port $ProxyPort -ServePort $ServePort
+        Wait-VerboseSession -BaseUrl $BaseUrl -ModelName $ModelName -SearxngUrl $SearxngUrl -Port $ProxyPort -ServePort $ServePort
     }
 }
 
@@ -53,6 +55,7 @@ function Wait-VerboseSession {
     param(
         [string]$BaseUrl,
         [string]$ModelName,
+        [string]$SearxngUrl,
         [int]$Port,
         [int]$ServePort
     )
@@ -73,6 +76,7 @@ function Wait-VerboseSession {
         try { Stop-TailscaleServe -Port $ServePort } catch { Write-Warn $_.Exception.Message }
         try { Stop-LocalProxy -Port $Port } catch { Write-Warn $_.Exception.Message }
         try { Stop-Ollama -BaseUrl $BaseUrl -ModelName $ModelName } catch { Write-Warn $_.Exception.Message }
+        try { Stop-Searxng -BaseUrl $SearxngUrl } catch { Write-Warn $_.Exception.Message }
     }
 }
 
